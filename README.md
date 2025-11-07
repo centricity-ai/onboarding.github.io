@@ -2,7 +2,7 @@
 
 ## Index
 
-1. [Executive Summary](#executive-summary)
+1. [Summary](#executive-summary)
 2. [System Architecture Overview](#system-architecture-overview)
 3. [Codebase Structure](#codebase-structure)
 4. [API Routes and Definitions](#api-routes-and-definitions)
@@ -66,11 +66,17 @@ graph TB
         FACE[Face Match]
         GEO[Geolocation]
     end
-    
+
+    subgraph "Other Services"
+        UNAUTH[OneDigital]
+    end
+
     WEB --> GATEWAY
     MOB --> GATEWAY
     API_CLIENT --> GATEWAY
-    
+
+    UNAUTH --> ORC
+
     GATEWAY --> AUTH
     GATEWAY --> ORC
     
@@ -90,7 +96,7 @@ graph TB
     INTEGRATION --> AOF
     INTEGRATION --> FACE
     INTEGRATION --> GEO
-    
+
     ORC --> BLOB
 ```
 
@@ -229,6 +235,37 @@ https://api.onboarding.service/v1
 
 ### 1. Onboarding Journey APIs
 
+#### User Onboarding Check
+```typescript
+GET /onboarding/
+Headers: {
+  "Authorization": "Bearer {token}",
+  "X-Client-Id": "{clientId}",
+  "X-Journey-Type": "{journeyType}"
+}
+
+Response: {
+    "exists" : "TRUE | FALSE",
+    "status" : "STARTED | IN_PROGRESS | COMPLETED | PAUSED | FAILED",
+    "metadata" : {
+        "journeyType" : "MUTUAL_FUNDS | BROKING | INSURANCE | GENERAL",
+        "journeyId" : "string",
+        "currentStep" : "number",
+        "totalSteps" : "number",
+         "steps": [
+            {
+              "stepId": "string",
+              "stepKey": "string",
+              "order": "number",
+              "status": "PENDING | IN_PROGRESS | COMPLETED",
+              "mandatory": "boolean"
+            }
+        ]
+    }
+  }
+```
+
+
 #### Initialize Onboarding
 ```typescript
 POST /onboarding/initialize
@@ -264,128 +301,12 @@ Response: {
 }
 ```
 
-#### Get Current Journey Status
-```typescript
-GET /onboarding/journey/{journeyId}/status
-Response: {
-  "journeyId": "string",
-  "status": "STARTED | IN_PROGRESS | COMPLETED | PAUSED | FAILED",
-  "currentStep": {
-    "stepId": "string",
-    "stepKey": "string",
-    "order": "number"
-  },
-  "completedSteps": ["string"],
-  "remainingSteps": ["string"],
-  "progressPercentage": "number"
-}
-```
 
-#### Execute Step
-```typescript
-POST /onboarding/journey/{journeyId}/step/{stepId}/execute
-Body: {
-  "stepData": "object", // Dynamic based on step type
-  "validationData": "object"
-}
-Response: {
-  "success": "boolean",
-  "stepResult": {
-    "stepId": "string",
-    "status": "COMPLETED | FAILED | PENDING_VALIDATION",
-    "validationErrors": ["string"],
-    "nextStep": "string | null"
-  }
-}
-```
-
-### 2. Progress Management APIs
-
-#### Resume Journey
-```typescript
-POST /progress/resume
-Body: {
-  "userId": "string",
-  "journeyId": "string"
-}
-Response: {
-  "journeyId": "string",
-  "resumedFromStep": {
-    "stepId": "string",
-    "stepKey": "string",
-    "order": "number"
-  },
-  "journeyData": "object"
-}
-```
-
-#### Save Progress
-```typescript
-PUT /progress/save
-Body: {
-  "journeyId": "string",
-  "currentStep": "string",
-  "completedSteps": ["string"],
-  "partialData": "object"
-}
-```
-
-#### Get User Progress
-```typescript
-GET /progress/user/{userId}
-Response: {
-  "activeJourneys": [
-    {
-      "journeyId": "string",
-      "journeyType": "string",
-      "status": "string",
-      "lastUpdated": "datetime"
-    }
-  ],
-  "completedJourneys": ["object"]
-}
-```
-
-### 3. Configuration Management APIs
-
-#### Get Journey Configuration
-```typescript
-GET /config/journey/{journeyType}
-Response: {
-  "journeyType": "string",
-  "version": "string",
-  "steps": [
-    {
-      "stepKey": "string",
-      "order": "number",
-      "config": {
-        "validations": ["object"],
-        "integrations": ["string"],
-        "uiConfig": "object"
-      }
-    }
-  ]
-}
-```
-
-#### Update Journey Configuration (Admin)
-```typescript
-PUT /config/journey/{journeyType}
-Headers: {
-  "X-Admin-Token": "{adminToken}"
-}
-Body: {
-  "version": "string",
-  "steps": ["object"],
-  "metadata": "object"
-}
-```
-
-### 4. Integration APIs
+### 2. Integration APIs
 
 #### Trigger KYC Verification
 ```typescript
-POST /integration/kyc/verify
+POST /integration/pan/verify
 Body: {
   "journeyId": "string",
   "pan": "string",
@@ -766,220 +687,6 @@ export interface IntegrationResponse {
   };
 }
 ```
-
-### Sample Adapter Implementation
-
-```typescript
-// digilocker.adapter.ts
-import { IIntegrationAdapter, IntegrationRequest, IntegrationResponse } from '../interfaces/integration.interface';
-import axios, { AxiosInstance } from 'axios';
-import { Logger } from '../../utils/logger';
-import { encrypt, decrypt } from '../../utils/encryption';
-
-export class DigiLockerAdapter implements IIntegrationAdapter {
-  serviceName = 'DIGILOCKER';
-  version = '1.0.0';
-  private client: AxiosInstance;
-  private config: any;
-  private logger: Logger;
-
-  async initialize(config: IntegrationConfig): Promise<void> {
-    this.config = config;
-    this.logger = new Logger('DigiLockerAdapter');
-    
-    this.client = axios.create({
-      baseURL: config.baseUrl,
-      timeout: config.timeout || 30000,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Service-Version': this.version
-      }
-    });
-
-    // Setup interceptors for auth
-    this.setupInterceptors();
-  }
-
-  async execute(request: IntegrationRequest): Promise<IntegrationResponse> {
-    const startTime = Date.now();
-    const requestId = this.generateRequestId();
-
-    try {
-      // Authenticate if needed
-      const token = await this.authenticate();
-      
-      // Make the actual API call
-      const response = await this.client.post(
-        this.config.endpoints.verify,
-        {
-          pan: request.data.pan,
-          aadhaar: request.data.aadhaar,
-          consent: request.data.consentToken
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'X-Request-ID': requestId
-          }
-        }
-      );
-
-      return {
-        success: true,
-        data: response.data,
-        metadata: {
-          requestId,
-          timestamp: new Date(),
-          duration: Date.now() - startTime
-        }
-      };
-    } catch (error) {
-      this.logger.error('DigiLocker API call failed', error);
-      
-      return {
-        success: false,
-        error: {
-          code: 'DIGILOCKER_ERROR',
-          message: error.message,
-          details: error.response?.data
-        },
-        metadata: {
-          requestId,
-          timestamp: new Date(),
-          duration: Date.now() - startTime
-        }
-      };
-    }
-  }
-
-  async validate(data: any): ValidationResult {
-    const errors = [];
-
-    if (!data.pan || !this.isValidPAN(data.pan)) {
-      errors.push({
-        field: 'pan',
-        message: 'Invalid PAN format'
-      });
-    }
-
-    if (!data.aadhaar || !this.isValidAadhaar(data.aadhaar)) {
-      errors.push({
-        field: 'aadhaar',
-        message: 'Invalid Aadhaar number'
-      });
-    }
-
-    if (!data.consentToken) {
-      errors.push({
-        field: 'consentToken',
-        message: 'Consent token is required'
-      });
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors
-    };
-  }
-
-  async healthCheck(): Promise<HealthStatus> {
-    try {
-      const response = await this.client.get(this.config.healthCheckUrl);
-      return {
-        healthy: response.status === 200,
-        message: 'Service is operational',
-        lastChecked: new Date()
-      };
-    } catch (error) {
-      return {
-        healthy: false,
-        message: `Health check failed: ${error.message}`,
-        lastChecked: new Date()
-      };
-    }
-  }
-
-  getMockResponse(scenario: string): any {
-    const mockResponses = {
-      'success': {
-        verified: true,
-        name: 'John Doe',
-        pan: 'ABCDE1234F',
-        aadhaar: '****-****-1234'
-      },
-      'failure': {
-        verified: false,
-        reason: 'PAN and Aadhaar mismatch'
-      },
-      'timeout': null
-    };
-
-    return mockResponses[scenario] || mockResponses['success'];
-  }
-
-  private async authenticate(): Promise<string> {
-    // OAuth2 authentication logic
-    const response = await this.client.post(
-      this.config.endpoints.authenticate,
-      {
-        client_id: decrypt(this.config.auth.clientId),
-        client_secret: decrypt(this.config.auth.clientSecret),
-        grant_type: 'client_credentials'
-      }
-    );
-
-    return response.data.access_token;
-  }
-
-  private setupInterceptors(): void {
-    // Request interceptor for logging
-    this.client.interceptors.request.use(
-      (config) => {
-        this.logger.info(`Outgoing request to ${config.url}`);
-        return config;
-      },
-      (error) => {
-        this.logger.error('Request interceptor error', error);
-        return Promise.reject(error);
-      }
-    );
-
-    // Response interceptor for retry logic
-    this.client.interceptors.response.use(
-      (response) => response,
-      async (error) => {
-        const originalRequest = error.config;
-        
-        if (error.response?.status === 429 && !originalRequest._retry) {
-          originalRequest._retry = true;
-          await this.delay(this.config.retryConfig.retryDelay);
-          return this.client(originalRequest);
-        }
-        
-        return Promise.reject(error);
-      }
-    );
-  }
-
-  private isValidPAN(pan: string): boolean {
-    return /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(pan);
-  }
-
-  private isValidAadhaar(aadhaar: string): boolean {
-    return /^\d{12}$/.test(aadhaar.replace(/\s/g, ''));
-  }
-
-  private generateRequestId(): string {
-    return `${this.serviceName}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-}
-```
-
----
 
 ## Infrastructure and Deployment
 
@@ -2270,7 +1977,6 @@ export class Logger {
 - JWT-based authentication with refresh tokens
 - Role-based access control (RBAC)
 - API key management for service-to-service communication
-- OAuth2 integration for third-party services
 
 ### 2. Data Protection
 - Encryption at rest for sensitive data
